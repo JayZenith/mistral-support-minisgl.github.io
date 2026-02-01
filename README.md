@@ -3,7 +3,7 @@
 > **TL;DR:** I added Mistral-7B support to mini-sglang, a lightweight LLM inference engine. The key challenges were handling a subtle Python `None` bug in config parsing and implementing sliding-window attention. Tested on an H100 with FlashAttention-3, the implementation is numerically consistent with HuggingFace within expected tolerance, and sliding window is behaviorally verified with a 6000+ token test.
 
 - **Code:** [github.com/JayZenith/mini-sglang](https://github.com/JayZenith/mini-sglang)
-
+- **Logit Comparison Test:**  View the test file: [compare_logits.py](https://github.com/JayZenith/mini-sglang/blob/main/compare_logits.py)  
 
 ## Why Mistral?
 
