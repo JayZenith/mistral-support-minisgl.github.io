@@ -1,8 +1,9 @@
-# Adding Mistral Support to a Custom LLM Inference Engine
+# Adding Mistral Support to mini-sglang
 
 > **TL;DR:** I added Mistral-7B support to mini-sglang, a lightweight LLM inference engine. The key challenges were handling a subtle Python `None` bug in config parsing and implementing sliding-window attention. Tested on an H100 with FlashAttention-3, the implementation is numerically consistent with HuggingFace within expected tolerance, and sliding window is behaviorally verified with a 6000+ token test.
 
 - **Code:** [github.com/JayZenith/mini-sglang](https://github.com/JayZenith/mini-sglang)
+- **logit comparison test:** [github.com/JayZenith/mini-sglang](https://github.com/JayZenith/mini-sglang/compare_logits.py)
 
 ## Why Mistral?
 
@@ -105,7 +106,7 @@ if getattr(config, "sliding_window", None):
 
 ---
 
-## The Bug That Almost Broke Everything
+## The `None` Bug 
 
 After making these changes, I got this cryptic error:
 
@@ -123,7 +124,7 @@ The original config parsing used:
 head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
 ```
 
-This *looks* correct—if `head_dim` doesn't exist, compute it. But here's the trap:
+This *looks* correct, if `head_dim` doesn't exist, compute it. But here's the trap:
 
 > **In Mistral's HuggingFace config, `head_dim` EXISTS but is set to `None`.**
 
@@ -153,7 +154,7 @@ To verify the implementation produces consistent outputs with HuggingFace, I cre
 
 I used a two-phase harness for simplicity and determinism:
 - **Phase 1 (`--hf`):** Load HuggingFace model, save reference logits to disk
-- **Phase 2 (`--engine`):** Load mini-sglang model, compare against saved reference
+- **Phase 2 (`--engine`):** Load mini-sglang model, compare against saved reference + sliding window divergence test
 
 > **Note:** The H100's 80GB VRAM could easily co-resident both ~15GB models simultaneously. I kept the two-phase approach because I originally developed it on a 24GB RTX 3090, and it provides cleaner isolation between frameworks for debugging.
 
@@ -177,25 +178,25 @@ Short sequences match tightly—exactly what we expect when sliding window doesn
 
 Short sequences don't exercise sliding window. To prove it's **actually working**, I tested with sequences **beyond the 4096 token window**.
 
-### Long Sequence Test (6002 tokens)
+### Long Sequence Test (7202 tokens)
 
 ```
-Sequence length: 6002 tokens (exceeds 4096 window by 1906)
-Comparison: Last-position logits (position 6001) from full prefill pass
+Sequence length: 7202 tokens (exceeds 4096 window by 3106)
+Comparison: Last-position logits from full prefill pass
 Note: Both HF and engine run with sliding_window=4096 enabled; full-attn run explicitly disables windowing.
 
 --- Windowed Engine vs HuggingFace ---
-  Max Diff:  0.205078
+  Max Diff:  0.192383
   Top-1 Match: True
-  Top-10 Overlap: 9/10 (Jaccard: 0.82)
+  Top-1: 'The' vs 'The'
 
 --- Full Attention Engine vs HuggingFace ---
-  Max Diff:  2.431885
+  Max Diff:  4.687500
   Top-1 Match: True
-  Top-10 Overlap: 7/10 (Jaccard: 0.54)
+  Top-1: 'The' vs 'The'
 
 --- Windowed vs Full Attention (DIVERGENCE TEST) ---
-  Max Diff:  2.373779
+  Max Diff:  4.796875
 ```
 
 ### Why Does Max Diff Jump from 0.01 to 0.2?
@@ -204,24 +205,11 @@ Short sequences stay within the 4096 window, so both implementations compute ide
 
 We treat max_abs_diff ≤ 0.25 as acceptable for long-context FP16 comparisons across different attention kernels.
 
-### Memory Impact of Sliding Window
-
-```
-Sequence: 6002 tokens (torch.cuda.max_memory_allocated)
-                    | Peak Memory (GB)
---------------------|------------------
-Windowed (4096)     |     22.4
-Full Attention      |     24.1
-```
-
-Sliding window saves ~1.7 GB at 6k tokens—the gap grows with sequence length.
-
 ### What This Proves
 
-1. **Windowed engine is 10x closer to HF** than full attention (0.2 vs 2.4 max diff)
-2. **Windowed and full attention diverge significantly** (2.37 max diff)—proving the window is actually limiting attention span
-3. **Both HF and windowed engine respect sliding window**; the 0.2 diff is expected numerical variation between different attention kernels
-4. **Sliding window reduces memory**—observable even at 6k tokens
+1. **Windowed engine is 24x closer to HF** than full attention (0.19 vs 4.69 max diff)
+2. **Windowed and full attention diverge significantly** (4.80 max diff), proving the window is actually limiting attention span
+3. **Both HF and windowed engine respect sliding window**; the 0.19 diff is expected numerical variation between different attention kernels
 
 ### Concrete Artifacts (the receipt)
 
@@ -232,37 +220,7 @@ Sliding window saves ~1.7 GB at 6k tokens—the gap grows with sequence length.
 
 The backend logs exactly which mode is active. No ambiguity.
 
----
-
-## Performance Numbers
-
-```
-============================================================
-Hardware & Configuration
-============================================================
-GPU: NVIDIA H100 80GB HBM3 (SM90/Hopper)
-Precision: FP16
-Backend: FlashAttention-3 (sgl-kernel 0.3.21)
-Sliding Window: 4096 tokens (ACTIVE)
-Batch Size: 1 (single request)
-Phase: Prefill only
-Warmup: 3 iterations
-Benchmark: 10 iterations
-
-============================================================
-Prefill Performance
-============================================================
-Seq Len  | Latency (ms) | Throughput (tok/s) | Peak Mem (GB)
----------|--------------|--------------------|--------------
-     512 |        12.80 |             40,000 |        13.68
-   1,024 |        24.17 |             42,371 |        13.86
-   2,048 |        49.64 |             41,258 |        14.09
-   4,096 |       101.78 |             40,244 |        14.55
-
-Note: Throughput is tokens/sec per request (not aggregate).
-```
-
----
+<!-- ---
 
 ## Key Takeaways
 
@@ -299,9 +257,9 @@ Avoid absolutist phrasing like "mathematically identical" without exhaustive cov
 - Show divergence metrics between windowed/full attention
 - Specify tolerance criteria explicitly (e.g., max_abs_diff ≤ 0.1 in FP16)
 
----
+--- -->
 
-## Resources
+<!-- ## Resources
 
 - **Code:** [github.com/JayZenith/mini-sglang](https://github.com/JayZenith/mini-sglang)
 - **Mistral HF Config:** [huggingface.co/mistralai/Mistral-7B-v0.1](https://huggingface.co/mistralai/Mistral-7B-v0.1)
@@ -309,7 +267,7 @@ Avoid absolutist phrasing like "mathematically identical" without exhaustive cov
 - **FlashInfer:** [github.com/flashinfer-ai/flashinfer](https://github.com/flashinfer-ai/flashinfer)
 - **mini-sglang:** [github.com/sgl-project/mini-sglang](https://github.com/sgl-project/mini-sglang)
 
----
+--- -->
 
 ## Appendix: Environment
 
@@ -317,7 +275,7 @@ For reproducibility:
 
 ```
 GPU: NVIDIA H100 80GB HBM3 (SM90)
-Python: 3.12.3
+Python: 3.11+
 PyTorch: 2.9.1+cu128
 CUDA: 12.8
 cuDNN: 91002
