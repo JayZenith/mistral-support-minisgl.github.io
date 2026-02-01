@@ -25,6 +25,8 @@ Both share:
 
 This means we can reuse the existing `LlamaForCausalLM` class—just wire up the sliding window config to the attention backend.
 
+> Note: mini-sglang automatically merges separate Q/K/V tensors into a single QKV projection during weight loading (_merge_state_dict), so Mistral weights work without special handling.   
+
 ---
 
 ## Implementation
